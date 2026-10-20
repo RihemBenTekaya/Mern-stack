@@ -1,72 +1,103 @@
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const User = require('../models/userModel');
 
-const { estNonVide, estEmailValide } = require('../utils/validators');
-let users = [
-  { id: 1, name: 'Aya', email: 'aya@example.com', role: 'user' },
-  { id: 2, name: 'Rihem', email: 'rihem@example.com', role: 'user' },
-  { id: 3, name: 'Hiba', email: 'hiba@example.com', role: 'admin' }
-];
-//Implémentez getAllUsers (avec filtre optionnel ?role=...).
-let prochainId = 4;
-
-const getAllUsers = (req, res) => {
-  const { role } = req.query;
-  let resultat = users;
-
-  if (role) {
-    resultat = users.filter((user) => user.role === role);
-  }
-
-  return res.status(200).json({ total: resultat.length, users: resultat });
+// Utilitaire de generation de Token JWT
+const generateToken = (id, role) => {
+  return jwt.sign({ id, role }, process.env.JWT_SECRET, {
+    expiresIn: '1d'
+  });
 };
 
+// POST /api/users/register (Inscription)
+const registerUser = async (req, res) => {
+  try {
+    const { name, email, password, age, role } = req.body;
 
+    if (!name || !email || !password) {
+      return res.status(400).json({ message: 'Nom, email et mot de passe requis' });
+    }
 
-const getUserById = (req, res) => {
-  const id = Number(req.params.id);
-  const user = users.find((item) => item.id === id);
+    const userExists = await User.findOne({ email });
+    if (userExists) {
+      return res.status(409).json({ message: 'Cet email est deja utilise' });
+    }
 
-  if (!user) {
-    return res.status(404).json({ error: `Utilisateur ${id} non trouvé` });
+    // Hachage securise avec sel (Salt factor = 10)
+    const salt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, salt);
+    const user = await User.create({
+      name,
+      email,
+      password: hashedPassword,
+      age,
+      role
+    });
+
+    res.status(201).json({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      token: generateToken(user._id, user.role)
+    });
+  } catch (err) {
+    if (err.name === 'ValidationError') {
+      return res.status(400).json({ message: err.message });
+    }
+    res.status(500).json({ message: err.message });
   }
-
-  return res.status(200).json({ user });
 };
 
-// Implémentez createUser (validation obligatoire de name et email, statut 201).
-const createUser = (req, res) => {
-  const { name, email, role } = req.body || {};
+// POST /api/users/login (Connexion)
+const loginUser = async (req, res) => {
+  try {
+    const { email, password } = req.body;
 
-  if (!estNonVide(name)) {
-    return res.status(400).json({ error: 'Le nom ne peut pas être vide.' });
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Email et mot de passe requis' });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+      return res.status(401).json({ message: 'Identifiants invalides' });
+    }
+
+    // Comparaison securisee en temps constant
+    const isMatch = await bcrypt.compare(password, user.password);
+    if (!isMatch) {
+      return res.status(401).json({ message: 'Identifiants invalides' });
+    }
+
+    res.status(200).json({
+      _id: user._id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      token: generateToken(user._id, user.role)
+    });
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
-
-  if (!estEmailValide(email)) {
-    return res.status(400).json({ error: 'L’email est invalide. Il doit contenir @ et un point.' });
-  }
-
-  const nouvelUtilisateur = { id: prochainId, name, email, role };
-  prochainId += 1;
-  users.push(nouvelUtilisateur);
-
-  return res.status(201).json({ message: 'Utilisateur créé', user: nouvelUtilisateur });
 };
 
-// Implémentez deleteUser (supprime l’utilisateur ou 404).
-const deleteUser = (req, res) => {
-  const id = Number(req.params.id);
-  const userExiste = users.some((u) => u.id === id);
-
-  if (!userExiste) {
-    return res.status(404).json({ error: `Impossible de supprimer : utilisateur ${id} non trouvé` });
+// GET /api/users/profile (Profil protege)
+const getUserProfile = async (req, res) => {
+  try {
+    res.status(200).json(req.user);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
   }
-
-  users = users.filter((u) => u.id !== id);
-  return res.status(200).json({ message: `Utilisateur ${id} supprimé avec succès` });
 };
 
-module.exports = {
-  getAllUsers,
-  getUserById,
-  createUser,
-  deleteUser
+// GET /api/users (Admin uniquement)
+const getAllUsers = async (req, res) => {
+  try {
+    const users = await User.find().select('-password');
+    res.status(200).json(users);
+  } catch (err) {
+    res.status(500).json({ message: err.message });
+  }
 };
+
+module.exports = { registerUser, loginUser, getUserProfile, getAllUsers };
